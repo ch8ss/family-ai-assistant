@@ -11,13 +11,59 @@ import {
   KeyboardAvoidingView,
   Platform,
   useWindowDimensions,
+  Animated,
+  Image,
+  Alert,
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
+import * as ImagePicker from 'expo-image-picker';
+import { Audio } from 'expo-av';
+import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
-import { sendMessage, getDailyTokensUsed } from '../lib/groq';
+import { sendMessage, sendMessageWithImage, transcribeAudio, getDailyTokensUsed } from '../lib/groq';
 import { Message, Profile, Conversation } from '../lib/types';
 
 const SLOT_COLORS = ['#7C3AED', '#EC4899', '#06B6D4'];
+
+function TypingIndicator({ color, name }: { color: string; name: string }) {
+  const dots = [useRef(new Animated.Value(0)).current, useRef(new Animated.Value(0)).current, useRef(new Animated.Value(0)).current];
+
+  useEffect(() => {
+    const anims = dots.map((dot, i) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(i * 150),
+          Animated.timing(dot, { toValue: 1, duration: 300, useNativeDriver: true }),
+          Animated.timing(dot, { toValue: 0, duration: 300, useNativeDriver: true }),
+          Animated.delay(600 - i * 150),
+        ])
+      )
+    );
+    anims.forEach((a) => a.start());
+    return () => anims.forEach((a) => a.stop());
+  }, []);
+
+  return (
+    <View style={typingStyles.row}>
+      <View style={typingStyles.bubble}>
+        {dots.map((dot, i) => (
+          <Animated.View
+            key={i}
+            style={[typingStyles.dot, { backgroundColor: color, opacity: dot, transform: [{ translateY: dot.interpolate({ inputRange: [0, 1], outputRange: [0, -4] }) }] }]}
+          />
+        ))}
+      </View>
+      <Text style={typingStyles.label}>{name} is typing…</Text>
+    </View>
+  );
+}
+
+const typingStyles = StyleSheet.create({
+  row: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingBottom: 8 },
+  bubble: { flexDirection: 'row', gap: 5, backgroundColor: '#12121E', borderRadius: 16, paddingHorizontal: 14, paddingVertical: 12 },
+  dot: { width: 7, height: 7, borderRadius: 4 },
+  label: { color: '#333', fontSize: 12 },
+});
 const DAILY_LIMIT = 50000;
 
 export default function ChatScreen() {
@@ -34,6 +80,10 @@ export default function ChatScreen() {
   const [tokensUsed, setTokensUsed] = useState(0);
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [attachedImage, setAttachedImage] = useState<string | null>(null);
+  const [attachedImageUri, setAttachedImageUri] = useState<string | null>(null);
+  const [recording, setRecording] = useState<Audio.Recording | null>(null);
+  const [transcribing, setTranscribing] = useState(false);
   const flatListRef = useRef<FlatList>(null);
 
   useEffect(() => {
@@ -94,6 +144,46 @@ export default function ChatScreen() {
     }
   }
 
+  async function pickImage() {
+    const { granted } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!granted) { Alert.alert('Permission needed', 'Allow access to your photos to attach images.'); return; }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      quality: 0.7,
+      base64: true,
+    });
+    if (!result.canceled && result.assets[0]) {
+      setAttachedImage(result.assets[0].base64 ?? null);
+      setAttachedImageUri(result.assets[0].uri);
+    }
+  }
+
+  async function startRecording() {
+    const { granted } = await Audio.requestPermissionsAsync();
+    if (!granted) { Alert.alert('Permission needed', 'Allow microphone access to use voice input.'); return; }
+    await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
+    const { recording: rec } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+    setRecording(rec);
+  }
+
+  async function stopRecording() {
+    if (!recording) return;
+    setTranscribing(true);
+    await recording.stopAndUnloadAsync();
+    await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
+    const uri = recording.getURI();
+    setRecording(null);
+    if (uri) {
+      try {
+        const text = await transcribeAudio(uri);
+        setInput(text);
+      } catch {
+        Alert.alert('Transcription failed', 'Could not convert audio to text. Try again.');
+      }
+    }
+    setTranscribing(false);
+  }
+
   async function handleSend() {
     if (!input.trim() || !profile || thinking || !activeConvId) return;
     const userText = input.trim();
@@ -111,11 +201,17 @@ export default function ChatScreen() {
     setThinking(true);
 
     try {
-      const replyText = await sendMessage(profile, userText, messages);
+      const replyText = attachedImage
+        ? await sendMessageWithImage(profile, userText, attachedImage, messages)
+        : await sendMessage(profile, userText, messages);
+
+      const storedContent = attachedImageUri ? `[image] ${userText}`.trim() : userText;
+      setAttachedImage(null);
+      setAttachedImageUri(null);
 
       const { data: savedUser } = await supabase
         .from('messages')
-        .insert({ profile_id: profile.id, conversation_id: activeConvId, role: 'user', content: userText })
+        .insert({ profile_id: profile.id, conversation_id: activeConvId, role: 'user', content: storedContent })
         .select()
         .single();
 
@@ -273,8 +369,9 @@ export default function ChatScreen() {
               onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
               ListEmptyComponent={
                 <View style={styles.emptyWrap}>
+                  <Ionicons name="sparkles-outline" size={36} color="#2A2A3E" style={{ marginBottom: 16 }} />
                   <Text style={styles.emptyText}>
-                    Hey {profile.name}! I'm {profile.ai_name}. What's on your mind?
+                    hey {profile.name}! i'm {profile.ai_name}.{'\n'}what's on your mind?
                   </Text>
                 </View>
               }
@@ -294,30 +391,56 @@ export default function ChatScreen() {
               )}
             />
 
-            {thinking && (
-              <View style={styles.thinkingRow}>
-                <ActivityIndicator color={color} size="small" />
-                <Text style={styles.thinkingText}>{profile.ai_name} is thinking…</Text>
+            {thinking && <TypingIndicator color={color} name={profile.ai_name} />}
+
+            {/* Image preview */}
+            {attachedImageUri && (
+              <View style={styles.imagePreviewWrap}>
+                <Image source={{ uri: attachedImageUri }} style={styles.imagePreview} />
+                <TouchableOpacity style={styles.imageRemove} onPress={() => { setAttachedImage(null); setAttachedImageUri(null); }}>
+                  <Text style={styles.imageRemoveText}>✕</Text>
+                </TouchableOpacity>
               </View>
             )}
 
             <View style={styles.inputRow}>
+              {/* + image button */}
+              <TouchableOpacity style={styles.iconBtn} onPress={pickImage}>
+                <Text style={[styles.iconBtnText, { color: attachedImageUri ? color : '#555' }]}>+</Text>
+              </TouchableOpacity>
+
               <TextInput
                 style={styles.input}
-                placeholder={`Message ${profile.ai_name}…`}
-                placeholderTextColor="#444"
+                placeholder={recording ? 'Recording…' : transcribing ? 'Transcribing…' : `Message ${profile.ai_name}…`}
+                placeholderTextColor={recording ? '#EF4444' : '#444'}
                 value={input}
                 onChangeText={setInput}
                 multiline
+                editable={!recording && !transcribing}
                 onSubmitEditing={handleSend}
               />
-              <TouchableOpacity
-                style={[styles.sendBtn, { backgroundColor: input.trim() ? color : '#1E1E2E' }]}
-                onPress={handleSend}
-                disabled={!input.trim() || thinking}
-              >
-                <Text style={styles.sendText}>↑</Text>
-              </TouchableOpacity>
+
+              {/* Mic / send button */}
+              {input.trim() || attachedImageUri ? (
+                <TouchableOpacity
+                  style={[styles.sendBtn, { backgroundColor: color }]}
+                  onPress={handleSend}
+                  disabled={thinking}
+                >
+                  <Ionicons name="arrow-up" size={20} color="#fff" />
+                </TouchableOpacity>
+              ) : transcribing ? (
+                <View style={[styles.sendBtn, { backgroundColor: '#1E1E2E' }]}>
+                  <ActivityIndicator color={color} size="small" />
+                </View>
+              ) : (
+                <TouchableOpacity
+                  style={[styles.sendBtn, { backgroundColor: recording ? '#EF4444' : '#1E1E2E' }]}
+                  onPress={recording ? stopRecording : startRecording}
+                >
+                  <Ionicons name={recording ? 'stop' : 'mic'} size={18} color={recording ? '#fff' : '#555'} />
+                </TouchableOpacity>
+              )}
             </View>
           </KeyboardAvoidingView>
         </View>
@@ -401,31 +524,33 @@ const styles = StyleSheet.create({
   messageList: { padding: 16, gap: 8, flexGrow: 1, justifyContent: 'flex-end' },
   bubble: {
     maxWidth: '82%',
-    borderRadius: 18,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    marginVertical: 3,
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginVertical: 2,
   },
-  bubbleUser: { alignSelf: 'flex-end' },
-  bubbleAI: { alignSelf: 'flex-start', backgroundColor: '#1E1E2E' },
-  bubbleText: { color: '#ccc', fontSize: 15, lineHeight: 22 },
+  bubbleUser: { alignSelf: 'flex-end', borderBottomRightRadius: 6 },
+  bubbleAI: { alignSelf: 'flex-start', backgroundColor: '#12121E', borderBottomLeftRadius: 6, borderWidth: 1, borderColor: '#1E1E2E' },
+  bubbleText: { color: '#bbb', fontSize: 15, lineHeight: 23 },
   bubbleTextUser: { color: '#fff' },
   emptyWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 80 },
-  emptyText: { color: '#555', fontSize: 15, textAlign: 'center', paddingHorizontal: 32, lineHeight: 22 },
-
-  thinkingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 16,
-    paddingBottom: 8,
+  emptyText: { color: '#333', fontSize: 16, textAlign: 'center', paddingHorizontal: 32, lineHeight: 26 },
+  imagePreviewWrap: { marginHorizontal: 12, marginBottom: 8, position: 'relative', alignSelf: 'flex-start' },
+  imagePreview: { width: 80, height: 80, borderRadius: 12 },
+  imageRemove: {
+    position: 'absolute', top: -6, right: -6,
+    backgroundColor: '#EF4444', borderRadius: 10, width: 20, height: 20,
+    alignItems: 'center', justifyContent: 'center',
   },
-  thinkingText: { color: '#555', fontSize: 13 },
+  imageRemoveText: { color: '#fff', fontSize: 10, fontWeight: '700' },
+  iconBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
+  iconBtnText: { fontSize: 28, fontWeight: '300', lineHeight: 32 },
   inputRow: {
     flexDirection: 'row',
     alignItems: 'flex-end',
-    padding: 12,
-    gap: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 10,
+    gap: 6,
     borderTopWidth: 1,
     borderTopColor: '#1E1E2E',
   },
