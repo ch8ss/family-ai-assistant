@@ -19,6 +19,12 @@ import { Profile } from '../lib/types';
 const SLOT_COLORS = ['#7C3AED', '#EC4899', '#06B6D4'];
 const DIGITS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', '⌫'];
 
+interface VoiceOption {
+  name: string;
+  lang: string;
+  localService: boolean;
+}
+
 export default function SettingsScreen() {
   const { profileId } = useLocalSearchParams<{ profileId: string }>();
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -30,6 +36,10 @@ export default function SettingsScreen() {
   const [aiName, setAiName] = useState('');
   const [persistentMemory, setPersistentMemory] = useState(true);
   const [activeMode, setActiveMode] = useState<'academics' | 'business' | null>(null);
+
+  // Voice
+  const [voices, setVoices] = useState<VoiceOption[]>([]);
+  const [voicePreference, setVoicePreference] = useState<string | null>(null);
 
   // PIN change state
   const [changingPin, setChangingPin] = useState(false);
@@ -49,8 +59,32 @@ export default function SettingsScreen() {
       setAiName(data.ai_name);
       setPersistentMemory(data.persistent_memory ?? true);
       setActiveMode(data.active_mode ?? null);
+      setVoicePreference(data.voice_preference ?? null);
     }
     setLoading(false);
+    loadVoices();
+  }
+
+  function loadVoices() {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return;
+    const populate = () => {
+      const all = window.speechSynthesis.getVoices();
+      const english = all.filter(v => v.lang.startsWith('en'));
+      setVoices(english.map(v => ({ name: v.name, lang: v.lang, localService: v.localService })));
+    };
+    populate();
+    window.speechSynthesis.onvoiceschanged = populate;
+  }
+
+  function previewVoice(voiceName: string) {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const all = window.speechSynthesis.getVoices();
+    const voice = all.find(v => v.name === voiceName);
+    const utterance = new SpeechSynthesisUtterance(`Hey! I'm ${aiName || 'your AI'}. How can I help you today?`);
+    utterance.rate = 1.05;
+    if (voice) utterance.voice = voice;
+    window.speechSynthesis.speak(utterance);
   }
 
   async function saveProfile() {
@@ -61,6 +95,7 @@ export default function SettingsScreen() {
       ai_name: aiName.trim() || profile.ai_name,
       persistent_memory: persistentMemory,
       active_mode: activeMode,
+      voice_preference: voicePreference,
     }).eq('id', profile.id);
     setSaving(false);
     Alert.alert('Saved', 'Your settings have been updated.');
@@ -200,6 +235,35 @@ export default function SettingsScreen() {
           ))}
         </View>
 
+        {/* Voice picker */}
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>AI voice</Text>
+          <Text style={styles.sectionHint}>Choose how your AI sounds when reading aloud. Tap the play icon to preview.</Text>
+          {voices.length === 0 && (
+            <Text style={styles.noVoices}>No voices found. Try opening this on a browser.</Text>
+          )}
+          {voices.map((v) => (
+            <TouchableOpacity
+              key={v.name}
+              style={[styles.voiceRow, voicePreference === v.name && { borderColor: color, backgroundColor: color + '10' }]}
+              onPress={() => setVoicePreference(v.name)}
+            >
+              <View style={styles.voiceInfo}>
+                <Text style={[styles.voiceName, voicePreference === v.name && { color }]} numberOfLines={1}>
+                  {v.name}
+                </Text>
+                <Text style={styles.voiceLang}>{v.lang}{v.localService ? ' · device' : ' · online'}</Text>
+              </View>
+              <TouchableOpacity onPress={() => previewVoice(v.name)} style={styles.previewBtn}>
+                <Ionicons name="play-circle-outline" size={22} color={voicePreference === v.name ? color : '#444'} />
+              </TouchableOpacity>
+              {voicePreference === v.name && (
+                <Ionicons name="checkmark-circle" size={18} color={color} />
+              )}
+            </TouchableOpacity>
+          ))}
+        </View>
+
         {/* Change PIN */}
         <View style={styles.section}>
           <Text style={styles.sectionLabel}>Security</Text>
@@ -302,6 +366,23 @@ const styles = StyleSheet.create({
   modeHint: { color: '#444', fontSize: 12, lineHeight: 17 },
   modeIndicator: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#1E1E2E' },
 
+  noVoices: { color: '#333', fontSize: 13, fontStyle: 'italic' },
+  voiceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#1E1E2E',
+    backgroundColor: '#0D0D1A',
+    marginBottom: 8,
+  },
+  voiceInfo: { flex: 1 },
+  voiceName: { color: '#bbb', fontSize: 14, fontWeight: '500' },
+  voiceLang: { color: '#333', fontSize: 11, marginTop: 2 },
+  previewBtn: { padding: 2 },
   pinBtn: {
     flexDirection: 'row',
     alignItems: 'center',

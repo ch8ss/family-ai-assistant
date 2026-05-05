@@ -7,6 +7,7 @@ export interface Profile {
   bio: string | null;
   persistent_memory: boolean;
   active_mode: 'academics' | 'business' | null;
+  voice_preference: string | null;
   created_at: string;
 }
 

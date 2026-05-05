@@ -119,6 +119,21 @@ export default function ChatScreen() {
     }
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 1.05;
+    utterance.pitch = 1.0;
+    utterance.volume = 1.0;
+
+    const voices = window.speechSynthesis.getVoices();
+    const preferred = profile?.voice_preference
+      ? voices.find(v => v.name === profile.voice_preference)
+      : voices.find(v =>
+          v.name.includes('Alex') ||
+          v.name.includes('Samantha') ||
+          v.name.includes('Google US English') ||
+          v.name.includes('Karen')
+        ) || voices.find(v => v.lang.startsWith('en') && v.localService) || voices[0];
+
+    if (preferred) utterance.voice = preferred;
     utterance.onend = () => setSpeakingId(null);
     utterance.onerror = () => setSpeakingId(null);
     setSpeakingId(id);
