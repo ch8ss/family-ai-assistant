@@ -4,6 +4,9 @@ export interface Profile {
   name: string;
   ai_name: string;
   pin: string;
+  bio: string | null;
+  persistent_memory: boolean;
+  active_mode: 'academics' | 'business' | null;
   created_at: string;
 }
 

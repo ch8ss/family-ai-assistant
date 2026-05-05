@@ -6,6 +6,7 @@ export default function RootLayout() {
       <Stack.Screen name="index" />
       <Stack.Screen name="pin" />
       <Stack.Screen name="chat" />
+      <Stack.Screen name="settings" />
     </Stack>
   );
 }

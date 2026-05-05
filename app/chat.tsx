@@ -15,7 +15,7 @@ import {
   Image,
   Alert,
 } from 'react-native';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { Audio } from 'expo-av';
 import { Ionicons } from '@expo/vector-icons';
@@ -84,13 +84,21 @@ export default function ChatScreen() {
   const [attachedImageUri, setAttachedImageUri] = useState<string | null>(null);
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [transcribing, setTranscribing] = useState(false);
-  const [activeMode, setActiveMode] = useState<ChatMode>(null);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   const flatListRef = useRef<FlatList>(null);
 
   useEffect(() => {
     if (profileId) bootstrap();
   }, [profileId]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      if (profile && profileId) {
+        supabase.from('profiles').select('*').eq('id', profileId).single()
+          .then(({ data }) => { if (data) setProfile(data); });
+      }
+    }, [profileId, profile?.id])
+  );
 
   useEffect(() => {
     setSidebarOpen(isWide);
@@ -216,6 +224,16 @@ export default function ChatScreen() {
     setTranscribing(false);
   }
 
+  async function fetchAllHistory(): Promise<Message[]> {
+    const { data } = await supabase
+      .from('messages')
+      .select('*')
+      .eq('profile_id', profileId)
+      .order('created_at', { ascending: false })
+      .limit(40);
+    return (data ?? []).reverse();
+  }
+
   async function handleSend() {
     if (!input.trim() || !profile || thinking || !activeConvId) return;
     const userText = input.trim();
@@ -233,9 +251,10 @@ export default function ChatScreen() {
     setThinking(true);
 
     try {
+      const context = profile.persistent_memory ? await fetchAllHistory() : messages;
       const replyText = attachedImage
-        ? await sendMessageWithImage(profile, userText, attachedImage, messages, activeMode)
-        : await sendMessage(profile, userText, messages, activeMode);
+        ? await sendMessageWithImage(profile, userText, attachedImage, context, null)
+        : await sendMessage(profile, userText, context, null);
 
       const storedContent = attachedImageUri ? `[image] ${userText}`.trim() : userText;
       setAttachedImage(null);
@@ -307,6 +326,9 @@ export default function ChatScreen() {
     <View style={[styles.sidebar, isWide && styles.sidebarWide]}>
       {/* Profile header */}
       <View style={styles.sidebarHeader}>
+        <TouchableOpacity onPress={() => router.push({ pathname: '/settings', params: { profileId: profile.id } })} style={styles.settingsBtn}>
+            <Ionicons name="settings-outline" size={18} color="#444" />
+          </TouchableOpacity>
         <TouchableOpacity onPress={() => router.replace('/')} style={styles.sidebarProfile}>
           <View style={[styles.sidebarAvatar, { backgroundColor: color }]}>
             <Text style={styles.sidebarAvatarText}>{profile.name[0].toUpperCase()}</Text>
@@ -333,29 +355,6 @@ export default function ChatScreen() {
       >
         <Text style={[styles.newChatText, { color }]}>+ New chat</Text>
       </TouchableOpacity>
-
-      {/* Mode toggles */}
-      <View style={styles.modesSection}>
-        <Text style={styles.modesTitle}>modes</Text>
-        <View style={styles.modesRow}>
-          {(['academics', 'business'] as const).map((m) => (
-            <TouchableOpacity
-              key={m}
-              style={[styles.modeChip, activeMode === m && { borderColor: color, backgroundColor: color + '18' }]}
-              onPress={() => setActiveMode(activeMode === m ? null : m)}
-            >
-              <Ionicons
-                name={m === 'academics' ? 'book-outline' : 'briefcase-outline'}
-                size={13}
-                color={activeMode === m ? color : '#444'}
-              />
-              <Text style={[styles.modeChipText, activeMode === m && { color }]}>
-                {m === 'academics' ? 'Academics' : 'Business'}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      </View>
 
       {/* Conversation list */}
       <FlatList
@@ -412,6 +411,13 @@ export default function ChatScreen() {
             )}
             <View style={[styles.headerDot, { backgroundColor: color }]} />
             <Text style={styles.headerName}>{profile.ai_name}</Text>
+            {profile.active_mode && (
+              <View style={[styles.modeBadge, { backgroundColor: color + '22', borderColor: color }]}>
+                <Text style={[styles.modeBadgeText, { color }]}>
+                  {profile.active_mode === 'academics' ? 'Academics' : 'Business'}
+                </Text>
+              </View>
+            )}
           </View>
 
           <KeyboardAvoidingView
@@ -563,6 +569,9 @@ const styles = StyleSheet.create({
   sidebarName: { color: '#fff', fontSize: 14, fontWeight: '600' },
   sidebarAiName: { color: '#555', fontSize: 12 },
   closeBtn: { color: '#555', fontSize: 18, padding: 4 },
+  settingsBtn: { padding: 4 },
+  modeBadge: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 8, paddingVertical: 2 },
+  modeBadgeText: { fontSize: 11, fontWeight: '700' },
 
   newChatBtn: {
     margin: 12,
