@@ -20,7 +20,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { Audio } from 'expo-av';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
-import { sendMessage, sendMessageWithImage, transcribeAudio, getDailyTokensUsed } from '../lib/groq';
+import { sendMessage, sendMessageWithImage, transcribeAudio, getDailyTokensUsed, ChatMode } from '../lib/groq';
 import { Message, Profile, Conversation } from '../lib/types';
 
 const SLOT_COLORS = ['#7C3AED', '#EC4899', '#06B6D4'];
@@ -84,6 +84,8 @@ export default function ChatScreen() {
   const [attachedImageUri, setAttachedImageUri] = useState<string | null>(null);
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [transcribing, setTranscribing] = useState(false);
+  const [activeMode, setActiveMode] = useState<ChatMode>(null);
+  const [speakingId, setSpeakingId] = useState<string | null>(null);
   const flatListRef = useRef<FlatList>(null);
 
   useEffect(() => {
@@ -93,6 +95,27 @@ export default function ChatScreen() {
   useEffect(() => {
     setSidebarOpen(isWide);
   }, [isWide]);
+
+  useEffect(() => {
+    if (messages.length > 0) {
+      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+    }
+  }, [messages]);
+
+  function speakMessage(id: string, text: string) {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return;
+    if (speakingId === id) {
+      window.speechSynthesis.cancel();
+      setSpeakingId(null);
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.onend = () => setSpeakingId(null);
+    utterance.onerror = () => setSpeakingId(null);
+    setSpeakingId(id);
+    window.speechSynthesis.speak(utterance);
+  }
 
   async function bootstrap() {
     const { data: profileData } = await supabase
@@ -153,8 +176,17 @@ export default function ChatScreen() {
       base64: true,
     });
     if (!result.canceled && result.assets[0]) {
-      setAttachedImage(result.assets[0].base64 ?? null);
-      setAttachedImageUri(result.assets[0].uri);
+      const asset = result.assets[0];
+      let base64 = asset.base64 ?? null;
+      // On web, URI may be a data URL — extract base64 from it
+      if (!base64 && asset.uri?.startsWith('data:')) {
+        base64 = asset.uri.split(',')[1] ?? null;
+      }
+      // Strip data URL prefix if accidentally included
+      if (base64?.includes(',')) base64 = base64.split(',')[1];
+      if (!base64) { Alert.alert('Error', 'Could not read image. Try another one.'); return; }
+      setAttachedImage(base64);
+      setAttachedImageUri(asset.uri);
     }
   }
 
@@ -202,8 +234,8 @@ export default function ChatScreen() {
 
     try {
       const replyText = attachedImage
-        ? await sendMessageWithImage(profile, userText, attachedImage, messages)
-        : await sendMessage(profile, userText, messages);
+        ? await sendMessageWithImage(profile, userText, attachedImage, messages, activeMode)
+        : await sendMessage(profile, userText, messages, activeMode);
 
       const storedContent = attachedImageUri ? `[image] ${userText}`.trim() : userText;
       setAttachedImage(null);
@@ -241,6 +273,8 @@ export default function ChatScreen() {
       const used = await getDailyTokensUsed();
       setTokensUsed(used);
     } catch (err: any) {
+      setAttachedImage(null);
+      setAttachedImageUri(null);
       setMessages((prev) => prev.filter((m) => m.id !== optimisticMsg.id));
       setMessages((prev) => [
         ...prev,
@@ -299,6 +333,29 @@ export default function ChatScreen() {
       >
         <Text style={[styles.newChatText, { color }]}>+ New chat</Text>
       </TouchableOpacity>
+
+      {/* Mode toggles */}
+      <View style={styles.modesSection}>
+        <Text style={styles.modesTitle}>modes</Text>
+        <View style={styles.modesRow}>
+          {(['academics', 'business'] as const).map((m) => (
+            <TouchableOpacity
+              key={m}
+              style={[styles.modeChip, activeMode === m && { borderColor: color, backgroundColor: color + '18' }]}
+              onPress={() => setActiveMode(activeMode === m ? null : m)}
+            >
+              <Ionicons
+                name={m === 'academics' ? 'book-outline' : 'briefcase-outline'}
+                size={13}
+                color={activeMode === m ? color : '#444'}
+              />
+              <Text style={[styles.modeChipText, activeMode === m && { color }]}>
+                {m === 'academics' ? 'Academics' : 'Business'}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </View>
 
       {/* Conversation list */}
       <FlatList
@@ -376,17 +433,31 @@ export default function ChatScreen() {
                 </View>
               }
               renderItem={({ item }) => (
-                <View
-                  style={[
-                    styles.bubble,
-                    item.role === 'user'
-                      ? [styles.bubbleUser, { backgroundColor: color }]
-                      : styles.bubbleAI,
-                  ]}
-                >
-                  <Text style={[styles.bubbleText, item.role === 'user' && styles.bubbleTextUser]}>
-                    {item.content}
-                  </Text>
+                <View style={item.role === 'user' ? styles.bubbleUserWrap : styles.bubbleAIWrap}>
+                  <View
+                    style={[
+                      styles.bubble,
+                      item.role === 'user'
+                        ? [styles.bubbleUser, { backgroundColor: color }]
+                        : styles.bubbleAI,
+                    ]}
+                  >
+                    <Text style={[styles.bubbleText, item.role === 'user' && styles.bubbleTextUser]}>
+                      {item.content}
+                    </Text>
+                  </View>
+                  {item.role === 'assistant' && (
+                    <TouchableOpacity
+                      style={styles.speakBtn}
+                      onPress={() => speakMessage(item.id, item.content)}
+                    >
+                      <Ionicons
+                        name={speakingId === item.id ? 'stop-circle-outline' : 'volume-medium-outline'}
+                        size={15}
+                        color={speakingId === item.id ? color : '#333'}
+                      />
+                    </TouchableOpacity>
+                  )}
                 </View>
               )}
             />
@@ -418,6 +489,12 @@ export default function ChatScreen() {
                 multiline
                 editable={!recording && !transcribing}
                 onSubmitEditing={handleSend}
+                onKeyPress={(e: any) => {
+                  if (e.nativeEvent.key === 'Enter' && !e.nativeEvent.shiftKey) {
+                    e.preventDefault?.();
+                    handleSend();
+                  }
+                }}
               />
 
               {/* Mic / send button */}
@@ -496,6 +573,11 @@ const styles = StyleSheet.create({
   },
   newChatText: { fontSize: 14, fontWeight: '600' },
 
+  modesSection: { paddingHorizontal: 12, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#1A1A2A' },
+  modesTitle: { color: '#333', fontSize: 10, fontWeight: '700', letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 8 },
+  modesRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+  modeChip: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 20, borderWidth: 1, borderColor: '#1E1E2E', backgroundColor: '#0A0A14' },
+  modeChipText: { color: '#444', fontSize: 12, fontWeight: '600' },
   convList: { flex: 1 },
   convItem: { paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, marginHorizontal: 8, marginVertical: 2 },
   convTitle: { color: '#ccc', fontSize: 13, fontWeight: '500' },
@@ -522,6 +604,9 @@ const styles = StyleSheet.create({
   headerName: { color: '#fff', fontSize: 16, fontWeight: '600' },
 
   messageList: { padding: 16, gap: 8, flexGrow: 1, justifyContent: 'flex-end' },
+  bubbleUserWrap: { alignSelf: 'flex-end', alignItems: 'flex-end' },
+  bubbleAIWrap: { alignSelf: 'flex-start', alignItems: 'flex-start' },
+  speakBtn: { marginTop: 4, marginLeft: 4, padding: 2 },
   bubble: {
     maxWidth: '82%',
     borderRadius: 20,
