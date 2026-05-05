@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -6,20 +6,98 @@ import {
   StyleSheet,
   SafeAreaView,
   ActivityIndicator,
+  Animated,
+  useWindowDimensions,
 } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { supabase } from '../lib/supabase';
 import { Profile } from '../lib/types';
 
 const SLOTS = [
-  { color: '#7C3AED', glow: '#7C3AED22' },
-  { color: '#EC4899', glow: '#EC489922' },
-  { color: '#06B6D4', glow: '#06B6D422' },
+  { color: '#8B5CF6', glow: 'rgba(139,92,246,0.35)' },
+  { color: '#EC4899', glow: 'rgba(236,72,153,0.35)' },
+  { color: '#06B6D4', glow: 'rgba(6,182,212,0.35)' },
 ];
+
+function ProfileCard({
+  profile,
+  slot,
+  index,
+  onPress,
+}: {
+  profile: Profile | null;
+  slot: { color: string; glow: string };
+  index: number;
+  onPress: () => void;
+}) {
+  const scale = useRef(new Animated.Value(1)).current;
+  const opacity = useRef(new Animated.Value(1)).current;
+
+  function pressIn() {
+    Animated.parallel([
+      Animated.spring(scale, { toValue: 0.93, useNativeDriver: true, speed: 30, bounciness: 0 }),
+      Animated.timing(opacity, { toValue: 0.85, duration: 80, useNativeDriver: true }),
+    ]).start();
+  }
+
+  function pressOut() {
+    Animated.parallel([
+      Animated.spring(scale, { toValue: 1, useNativeDriver: true, speed: 20, bounciness: 6 }),
+      Animated.timing(opacity, { toValue: 1, duration: 150, useNativeDriver: true }),
+    ]).start();
+  }
+
+  const isEmpty = !profile;
+
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      onPressIn={pressIn}
+      onPressOut={pressOut}
+      activeOpacity={1}
+      style={styles.cardWrapper}
+    >
+      <Animated.View style={[styles.cardInner, { transform: [{ scale }], opacity }]}>
+        {/* Avatar */}
+        <View
+          style={[
+            styles.avatar,
+            {
+              backgroundColor: isEmpty ? '#1a1a2e' : slot.color,
+              borderColor: isEmpty ? '#2a2a3e' : slot.color,
+              shadowColor: slot.glow,
+            },
+          ]}
+        >
+          {isEmpty ? (
+            <Text style={styles.plusIcon}>+</Text>
+          ) : (
+            <Text style={styles.avatarLetter}>
+              {profile.name[0].toUpperCase()}
+            </Text>
+          )}
+        </View>
+
+        {/* Name */}
+        <Text style={[styles.name, isEmpty && styles.nameEmpty]}>
+          {isEmpty ? 'Add profile' : profile.name}
+        </Text>
+
+        {/* AI name */}
+        {profile && (
+          <Text style={[styles.aiName, { color: slot.color }]}>
+            {profile.ai_name}
+          </Text>
+        )}
+      </Animated.View>
+    </TouchableOpacity>
+  );
+}
 
 export default function ProfilePicker() {
   const [profiles, setProfiles] = useState<(Profile | null)[]>([null, null, null]);
   const [loading, setLoading] = useState(true);
+  const { width } = useWindowDimensions();
 
   async function loadProfiles() {
     setLoading(true);
@@ -35,7 +113,7 @@ export default function ProfilePicker() {
   if (loading) {
     return (
       <View style={[styles.container, styles.center]}>
-        <ActivityIndicator color="#7C3AED" size="large" />
+        <ActivityIndicator color="#8B5CF6" size="large" />
       </View>
     );
   }
@@ -45,42 +123,19 @@ export default function ProfilePicker() {
       <View style={styles.inner}>
         <Text style={styles.wordmark}>family ai</Text>
         <Text style={styles.heading}>hey, who's this?</Text>
-        <Text style={styles.sub}>pick your profile to start chatting</Text>
 
-        <View style={styles.cards}>
-          {profiles.map((profile, i) => {
-            const slot = SLOTS[i];
-            return (
-              <TouchableOpacity
-                key={i}
-                style={[styles.card, { borderColor: slot.color, shadowColor: slot.color }]}
-                onPress={() =>
-                  router.push({ pathname: '/pin', params: { slot: String(i + 1) } })
-                }
-                activeOpacity={0.75}
-              >
-                <View style={[styles.cardAccent, { backgroundColor: slot.color }]} />
-                <View style={[styles.avatar, { backgroundColor: slot.color + '22', borderColor: slot.color }]}>
-                  <Text style={[styles.avatarText, { color: slot.color }]}>
-                    {profile ? profile.name[0].toUpperCase() : '+'}
-                  </Text>
-                </View>
-                <View style={styles.cardInfo}>
-                  <Text style={styles.cardName}>
-                    {profile ? profile.name : 'Add profile'}
-                  </Text>
-                  {profile ? (
-                    <Text style={[styles.cardAI, { color: slot.color }]}>
-                      chatting with {profile.ai_name}
-                    </Text>
-                  ) : (
-                    <Text style={styles.cardAIEmpty}>tap to set up</Text>
-                  )}
-                </View>
-                <Text style={[styles.arrow, { color: slot.color }]}>›</Text>
-              </TouchableOpacity>
-            );
-          })}
+        <View style={[styles.grid, width < 500 && styles.gridNarrow]}>
+          {profiles.map((profile, i) => (
+            <ProfileCard
+              key={i}
+              profile={profile}
+              slot={SLOTS[i]}
+              index={i}
+              onPress={() =>
+                router.push({ pathname: '/pin', params: { slot: String(i + 1) } })
+              }
+            />
+          ))}
         </View>
       </View>
     </SafeAreaView>
@@ -90,58 +145,86 @@ export default function ProfilePicker() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0A0A14' },
   center: { alignItems: 'center', justifyContent: 'center' },
-  inner: { flex: 1, paddingHorizontal: 24, justifyContent: 'center' },
+  inner: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
   wordmark: {
-    color: '#333',
-    fontSize: 13,
+    color: '#2a2a3a',
+    fontSize: 12,
     fontWeight: '700',
-    letterSpacing: 4,
+    fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
+    letterSpacing: 5,
     textTransform: 'uppercase',
-    textAlign: 'center',
-    marginBottom: 24,
+    marginBottom: 28,
   },
   heading: {
     color: '#fff',
-    fontSize: 34,
+    fontSize: 32,
     fontWeight: '800',
-    textAlign: 'center',
+    fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
     letterSpacing: -0.5,
-    marginBottom: 8,
-  },
-  sub: {
-    color: '#444',
-    fontSize: 14,
+    marginBottom: 56,
     textAlign: 'center',
-    marginBottom: 48,
   },
-  cards: { gap: 16 },
-  card: {
+  grid: {
     flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#12121E',
-    borderRadius: 20,
-    borderWidth: 1,
-    overflow: 'hidden',
-    shadowOpacity: 0.25,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 6,
-    paddingRight: 20,
+    justifyContent: 'center',
+    flexWrap: 'wrap',
+    gap: 32,
   },
-  cardAccent: { width: 4, alignSelf: 'stretch' },
+  gridNarrow: {
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: 24,
+  },
+  cardWrapper: {
+    alignItems: 'center',
+  },
+  cardInner: {
+    alignItems: 'center',
+    gap: 14,
+  },
   avatar: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    borderWidth: 1.5,
+    width: 130,
+    height: 130,
+    borderRadius: 16,
+    borderWidth: 2,
     alignItems: 'center',
     justifyContent: 'center',
-    margin: 16,
+    shadowOpacity: 0.6,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 10,
   },
-  avatarText: { fontSize: 22, fontWeight: '800' },
-  cardInfo: { flex: 1 },
-  cardName: { color: '#fff', fontSize: 17, fontWeight: '700' },
-  cardAI: { fontSize: 13, marginTop: 3, fontWeight: '500' },
-  cardAIEmpty: { color: '#333', fontSize: 13, marginTop: 3 },
-  arrow: { fontSize: 28, fontWeight: '300' },
+  avatarLetter: {
+    fontSize: 52,
+    fontWeight: '800',
+    color: '#fff',
+    letterSpacing: -1,
+  },
+  plusIcon: {
+    fontSize: 44,
+    fontWeight: '300',
+    color: '#3a3a5a',
+  },
+  name: {
+    color: '#ccc',
+    fontSize: 16,
+    fontWeight: '600',
+    fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
+    letterSpacing: 0.2,
+  },
+  nameEmpty: {
+    color: '#3a3a5a',
+  },
+  aiName: {
+    fontSize: 13,
+    fontWeight: '500',
+    fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
+    marginTop: -6,
+    opacity: 0.85,
+  },
 });

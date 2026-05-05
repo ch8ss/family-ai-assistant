@@ -47,6 +47,8 @@ function buildSystemPrompt(profile: Profile, mode: ChatMode): string {
 
 IMPORTANT: Only reference past conversations if they actually appear in the chat history provided to you. NEVER invent, assume, or fabricate past interactions, memories, or things ${profile.name} has said before. When history IS provided, use it naturally to be more personal and thoughtful.
 
+NEVER mention training cutoffs, knowledge limitations, or that your information might be outdated. You have live web search access — if you're not sure about something recent, just say so naturally without the disclaimer.
+
 No corporate speak, no robotic answers — just you, being the best AI bestie possible.`;
 
   const activeMode = mode ?? profile.active_mode ?? null;
@@ -97,19 +99,62 @@ ALWAYS:
   return base;
 }
 
+export interface Source {
+  title: string;
+  url: string;
+}
+
+async function searchWeb(query: string): Promise<{ context: string; sources: Source[] }> {
+  const apiKey = process.env.EXPO_PUBLIC_TAVILY_API_KEY;
+  if (!apiKey) return { context: '', sources: [] };
+  try {
+    const res = await fetch('https://api.tavily.com/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_key: apiKey,
+        query,
+        search_depth: 'basic',
+        max_results: 3,
+        include_answer: true,
+      }),
+    });
+    const data = await res.json();
+    if (!data.results?.length) return { context: '', sources: [] };
+    const sources: Source[] = data.results.map((r: any) => ({ title: r.title, url: r.url }));
+    const snippets = data.results.map((r: any) => `[${r.title}]\n${r.content}`).join('\n\n');
+    const context = `\n\nLIVE WEB CONTEXT (today's date: ${new Date().toDateString()}):\n${snippets}\n\nUse this information if relevant. Cite naturally — don't say "according to search results". IMPORTANT: You have live web access, so do NOT mention training cutoffs, knowledge limitations, or that your information might be outdated. You have current information.`;
+    return { context, sources };
+  } catch {
+    return { context: '', sources: [] };
+  }
+}
+
+function needsSearch(message: string): boolean {
+  const m = message.trim().toLowerCase();
+  if (m.length < 8) return false;
+  const conversational = /^(hi|hey|hello|thanks|thank you|ok|okay|sure|lol|haha|yes|no|yep|nope|cool|nice|wow|great|awesome)[\s!?.]*$/.test(m);
+  if (conversational) return false;
+  return true;
+}
+
 export async function sendMessage(
   profile: Profile,
   userMessage: string,
   history: Message[],
   mode: ChatMode = null
-): Promise<string> {
+): Promise<{ content: string; sources: Source[] }> {
   const used = await getDailyTokensUsed();
   if (used >= DAILY_TOKEN_LIMIT) throw new Error('Daily limit reached. Try again tomorrow.');
+
+  const { context: webContext, sources } = needsSearch(userMessage)
+    ? await searchWeb(userMessage)
+    : { context: '', sources: [] };
 
   const response = await groq.chat.completions.create({
     model: MODEL,
     messages: [
-      { role: 'system', content: buildSystemPrompt(profile, mode) },
+      { role: 'system', content: buildSystemPrompt(profile, mode) + webContext },
       ...history.slice(-MAX_HISTORY).map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
       { role: 'user', content: userMessage },
     ],
@@ -118,7 +163,7 @@ export async function sendMessage(
 
   const content = response.choices[0].message.content ?? '';
   if (response.usage) await updateDailyTokens(response.usage.total_tokens);
-  return content;
+  return { content, sources };
 }
 
 export async function sendMessageWithImage(
@@ -127,7 +172,7 @@ export async function sendMessageWithImage(
   imageBase64: string,
   history: Message[],
   mode: ChatMode = null
-): Promise<string> {
+): Promise<{ content: string; sources: Source[] }> {
   const used = await getDailyTokensUsed();
   if (used >= DAILY_TOKEN_LIMIT) throw new Error('Daily limit reached. Try again tomorrow.');
 
@@ -148,7 +193,7 @@ export async function sendMessageWithImage(
 
   const content = response.choices[0].message.content ?? '';
   if (response.usage) await updateDailyTokens(response.usage.total_tokens);
-  return content;
+  return { content, sources: [] };
 }
 
 export async function transcribeAudio(audioUri: string): Promise<string> {
