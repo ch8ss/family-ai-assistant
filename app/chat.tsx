@@ -85,6 +85,7 @@ export default function ChatScreen() {
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [transcribing, setTranscribing] = useState(false);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
+  const [hoveredConvId, setHoveredConvId] = useState<string | null>(null);
   const flatListRef = useRef<FlatList>(null);
 
   useEffect(() => {
@@ -239,6 +240,27 @@ export default function ChatScreen() {
     setTranscribing(false);
   }
 
+  async function deleteConversation(convId: string) {
+    Alert.alert('Delete chat', 'This will permanently delete this conversation.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete', style: 'destructive',
+        onPress: async () => {
+          await supabase.from('conversations').delete().eq('id', convId);
+          const remaining = conversations.filter(c => c.id !== convId);
+          setConversations(remaining);
+          if (activeConvId === convId) {
+            if (remaining.length > 0) {
+              await loadConversation(remaining[0].id);
+            } else {
+              await startNewConversation();
+            }
+          }
+        },
+      },
+    ]);
+  }
+
   async function fetchAllHistory(): Promise<Message[]> {
     const { data } = await supabase
       .from('messages')
@@ -376,22 +398,32 @@ export default function ChatScreen() {
         data={conversations}
         keyExtractor={(c) => c.id}
         style={styles.convList}
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            style={[styles.convItem, item.id === activeConvId && { backgroundColor: '#1E1E2E' }]}
-            onPress={() => {
-              loadConversation(item.id);
-              if (!isWide) setSidebarOpen(false);
-            }}
-          >
-            <Text style={styles.convTitle} numberOfLines={1}>
-              {item.title ?? 'New chat'}
-            </Text>
-            <Text style={styles.convDate}>
-              {new Date(item.created_at).toLocaleDateString()}
-            </Text>
-          </TouchableOpacity>
-        )}
+        renderItem={({ item }) => {
+          const isHovered = hoveredConvId === item.id;
+          const isActive = item.id === activeConvId;
+          return (
+            <TouchableOpacity
+              style={[styles.convItem, isActive && { backgroundColor: '#1E1E2E' }, isHovered && !isActive && { backgroundColor: '#141420' }]}
+              onPress={() => { loadConversation(item.id); if (!isWide) setSidebarOpen(false); }}
+              onLongPress={() => deleteConversation(item.id)}
+              // @ts-ignore - web only hover events
+              onMouseEnter={() => setHoveredConvId(item.id)}
+              onMouseLeave={() => setHoveredConvId(null)}
+            >
+              <View style={styles.convRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.convTitle} numberOfLines={1}>{item.title ?? 'New chat'}</Text>
+                  <Text style={styles.convDate}>{new Date(item.created_at).toLocaleDateString()}</Text>
+                </View>
+                {isHovered && (
+                  <TouchableOpacity onPress={() => deleteConversation(item.id)} style={styles.deleteBtn}>
+                    <Ionicons name="trash-outline" size={14} color="#EF4444" />
+                  </TouchableOpacity>
+                )}
+              </View>
+            </TouchableOpacity>
+          );
+        }}
       />
 
       {/* Usage bar */}
@@ -604,8 +636,10 @@ const styles = StyleSheet.create({
   modeChipText: { color: '#444', fontSize: 12, fontWeight: '600' },
   convList: { flex: 1 },
   convItem: { paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, marginHorizontal: 8, marginVertical: 2 },
+  convRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   convTitle: { color: '#ccc', fontSize: 13, fontWeight: '500' },
   convDate: { color: '#444', fontSize: 11, marginTop: 2 },
+  deleteBtn: { padding: 4 },
 
   usageWrap: { padding: 16, borderTopWidth: 1, borderTopColor: '#1E1E2E' },
   usageLabel: { color: '#444', fontSize: 11, marginBottom: 6 },
