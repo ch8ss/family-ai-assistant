@@ -96,6 +96,7 @@ ALWAYS:
   if (activeMode === 'business') {
     return base + `\n\nBUSINESS MODE ON: Focus on business and decisions. Be sharp, strategic, and practical. Think like a senior advisor — weigh tradeoffs, consider risks, give ${profile.name} clear actionable recommendations.`;
   }
+
   return base;
 }
 

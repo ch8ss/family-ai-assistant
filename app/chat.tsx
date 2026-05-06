@@ -60,6 +60,7 @@ const typingStyles = StyleSheet.create({
   label: { color: '#444', fontSize: 12 },
 });
 
+
 function getTimeGroup(dateStr: string): string {
   const date = new Date(dateStr);
   const now = new Date();
@@ -159,8 +160,9 @@ export default function ChatScreen() {
     const { data: profileData } = await supabase.from('profiles').select('*').eq('id', profileId).single();
     if (profileData) setProfile(profileData);
     const { data: convData } = await supabase.from('conversations').select('*').eq('profile_id', profileId).order('created_at', { ascending: false });
-    if (convData && convData.length > 0) { setConversations(convData); await loadConversation(convData[0].id); }
-    else await startNewConversation(profileId);
+    if (convData) setConversations(convData);
+    setActiveConvId(null);
+    setMessages([]);
     const used = await getDailyTokensUsed();
     setTokensUsed(used);
     setLoading(false);
@@ -221,7 +223,7 @@ export default function ChatScreen() {
       setConversations(remaining);
       if (activeConvId === convId) {
         if (remaining.length > 0) await loadConversation(remaining[0].id);
-        else await startNewConversation();
+        else { setActiveConvId(null); setMessages([]); }
       }
     };
     if (Platform.OS === 'web') {
@@ -240,10 +242,20 @@ export default function ChatScreen() {
   }
 
   async function handleSend() {
-    if (!input.trim() || !profile || thinking || !activeConvId) return;
+    if (!input.trim() || !profile || thinking) return;
     const userText = input.trim();
     setInput('');
-    const optimisticMsg: Message = { id: Date.now().toString(), profile_id: profile.id, conversation_id: activeConvId, role: 'user', content: userText, created_at: new Date().toISOString() };
+
+    let convId = activeConvId;
+    if (!convId) {
+      const { data } = await supabase.from('conversations').insert({ profile_id: profile.id, title: 'New chat' }).select().single();
+      if (!data) return;
+      convId = data.id;
+      setActiveConvId(data.id);
+      setConversations(prev => [data, ...prev]);
+    }
+
+    const optimisticMsg: Message = { id: Date.now().toString(), profile_id: profile.id, conversation_id: convId, role: 'user', content: userText, created_at: new Date().toISOString() };
     setMessages(prev => [...prev, optimisticMsg]);
     setThinking(true);
     try {
@@ -255,15 +267,15 @@ export default function ChatScreen() {
       const replySources = result.sources;
       const storedContent = attachedImageUri ? `[image] ${userText}`.trim() : userText;
       setAttachedImage(null); setAttachedImageUri(null);
-      const { data: savedUser } = await supabase.from('messages').insert({ profile_id: profile.id, conversation_id: activeConvId, role: 'user', content: storedContent }).select().single();
-      const { data: savedReply } = await supabase.from('messages').insert({ profile_id: profile.id, conversation_id: activeConvId, role: 'assistant', content: replyText }).select().single();
+      const { data: savedUser } = await supabase.from('messages').insert({ profile_id: profile.id, conversation_id: convId, role: 'user', content: storedContent }).select().single();
+      const { data: savedReply } = await supabase.from('messages').insert({ profile_id: profile.id, conversation_id: convId, role: 'assistant', content: replyText }).select().single();
       if (savedReply && replySources.length > 0) {
         setSourcesMap(prev => ({ ...prev, [savedReply.id]: replySources }));
       }
       if (messages.length === 0) {
         const title = userText.slice(0, 40) + (userText.length > 40 ? '…' : '');
-        await supabase.from('conversations').update({ title }).eq('id', activeConvId);
-        setConversations(prev => prev.map(c => c.id === activeConvId ? { ...c, title } : c));
+        await supabase.from('conversations').update({ title }).eq('id', convId);
+        setConversations(prev => prev.map(c => c.id === convId ? { ...c, title } : c));
       }
       setMessages(prev => {
         const without = prev.filter(m => m.id !== optimisticMsg.id);
@@ -277,7 +289,7 @@ export default function ChatScreen() {
     } catch (err: any) {
       setAttachedImage(null); setAttachedImageUri(null);
       setMessages(prev => prev.filter(m => m.id !== optimisticMsg.id));
-      setMessages(prev => [...prev, { id: Date.now().toString(), profile_id: profile.id, conversation_id: activeConvId, role: 'assistant', content: err.message ?? 'Something went wrong. Try again.', created_at: new Date().toISOString() }]);
+      setMessages(prev => [...prev, { id: Date.now().toString(), profile_id: profile.id, conversation_id: convId, role: 'assistant', content: err.message ?? 'Something went wrong. Try again.', created_at: new Date().toISOString() }]);
     } finally {
       setThinking(false);
     }
@@ -316,7 +328,7 @@ export default function ChatScreen() {
       {/* New chat */}
       <TouchableOpacity
         style={[styles.newChatBtn, { borderColor: color }]}
-        onPress={() => { startNewConversation(); if (!isWide) setSidebarOpen(false); }}
+        onPress={() => { setActiveConvId(null); setMessages([]); if (!isWide) setSidebarOpen(false); }}
       >
         <Text style={[styles.newChatText, { color }]}>+ New chat</Text>
       </TouchableOpacity>
@@ -432,6 +444,7 @@ export default function ChatScreen() {
                       </TouchableOpacity>
                     </View>
                   )}
+
                   {item.role === 'assistant' && sourcesMap[item.id]?.length > 0 && (
                     <View style={styles.sourcesWrap}>
                       <Ionicons name="globe-outline" size={11} color="#444" style={{ marginRight: 4 }} />
@@ -551,6 +564,7 @@ const styles = StyleSheet.create({
   bubbleAIWrap: { alignSelf: 'flex-start', alignItems: 'flex-start' },
   messageActions: { flexDirection: 'row', gap: 4, marginTop: 4, marginLeft: 4 },
   actionBtn: { padding: 4 },
+
   sourcesWrap: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', marginTop: 6, marginLeft: 4, gap: 6, maxWidth: '82%' },
   sourceChip: { backgroundColor: '#1A1A2A', borderRadius: 12, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1, borderColor: '#2A2A3A', maxWidth: 180 },
   sourceChipText: { color: '#666', fontSize: 11 },
